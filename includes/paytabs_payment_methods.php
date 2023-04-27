@@ -75,6 +75,12 @@ class WC_Gateway_Paytabs extends WC_Payment_Gateway
 
         // PT
         $this->paytabs_endpoint = $this->get_option('endpoint');
+        // PayTabs Payment Currency
+        $this->paytabs_currency = $this->get_option('paytabs_currency');
+        // Exchange Rate URL
+        $this->exchange_rate_url = $this->get_option('exchange_rate_url');
+        // Custom Exchange Rate
+        $this->custom_exchange_rate = $this->get_option('custom_exchange_rate');
         $this->merchant_id = $this->get_option('profile_id');
         $this->merchant_key = $this->get_option('server_key');
         $this->client_key = $this->get_option('client_key');
@@ -166,6 +172,37 @@ class WC_Gateway_Paytabs extends WC_Payment_Gateway
     }
 
     /**
+     * Function to get Exchange Rate
+     **/
+    public function get_exchange_rate()
+    {
+        // Fetching JSON
+        $req_url = $this->get_option('exchange_rate_url');
+    
+        // Initializing curl
+        $ch = curl_init();
+    
+        // Setting curl options
+        curl_setopt($ch, CURLOPT_URL, $req_url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    
+        // Executing curl request
+        $response_json = curl_exec($ch);
+    
+        // Closing curl
+        curl_close($ch);
+    
+        // Decoding JSON response
+        $response = json_decode($response_json);
+    
+        if (false !== $response_json) {
+            // Returning exchange rates as object
+            return $response;
+        }
+
+    }
+
+    /**
      * Plugin options
      */
     public function init_form_fields()
@@ -177,6 +214,53 @@ class WC_Gateway_Paytabs extends WC_Payment_Gateway
         );
 
         $endpoints = PaytabsApi::getEndpoints();
+
+        // PayTabs Payment Currency List
+        $currency_code_options = get_woocommerce_currencies();
+
+		foreach ( $currency_code_options as $code => $name ) {
+			$currency_code_options[ $code ] = $name . ' (' . get_woocommerce_currency_symbol( $code ) . ')';
+		};
+
+        // Exchange Rate APIs URLs
+        $open_api = 'https://open.er-api.com/v6/latest/USD';
+
+        // Get JSON response
+        $response = $this->get_exchange_rate();
+
+        // Get PayTabs Payment Currency field
+        $paytabs_currency = $this->get_option('paytabs_currency');
+        
+        // Get Custom Exchange Rate field
+        $custom_exchange_rate = $this->get_option('custom_exchange_rate');
+
+        // Set default timezone to EET
+        //date_default_timezone_set('Africa/Cairo');
+        
+        // Get exchange rate from PayTab Payment Currency or Custom Exchange Rate
+        if ($response->rates) {
+            $exchange_rate = round($response->rates->$paytabs_currency, 2);
+        } else if ($response->conversion_rates) {
+            $exchange_rate = round($response->conversion_rates->$paytabs_currency, 2);
+        } else {
+            $exchange_rate = $custom_exchange_rate;
+        };
+        
+        // Get Last Update formatted to "D, d/m/Y, g:i A T" ex. Thu, 13/04/2023, 6:00 PM EET
+        if ('success' === $response->result) {
+            $exchange_last_update = date('D, d/m/Y, g:i A T', $response->time_last_update_unix);
+        } else if ($response->timestamp) {
+            $exchange_last_update = date('D, d/m/Y, g:i A T', $response->timestamp);
+        } else {
+            $exchange_last_update = "Not Available";
+        };
+        
+        // Get Error Message
+        if ($response->result === 'error') {
+            $errorMessage = $response->{'error-type'};
+        } else if ($response->error === true) {
+            $errorMessage = $response->description;
+        };
 
         $ipn_url = $this->get_ipn_url();
 
@@ -214,6 +298,7 @@ class WC_Gateway_Paytabs extends WC_Payment_Gateway
                 'title'       => __('Transaction Type', 'PayTabs'),
                 'label'       => __('Transaction Type', 'PayTabs'),
                 'type'        => 'select',
+                'class'       => 'wc-enhanced-select',
                 'description' => 'Set the transaction type to Auth or Sale',
                 'options'     => array(
                     PaytabsEnum::TRAN_TYPE_SALE => __('Sale', 'PayTabs'),
@@ -225,6 +310,7 @@ class WC_Gateway_Paytabs extends WC_Payment_Gateway
             $addional_fields['status_auth_success'] = [
                 'title'       => __('Auth Order status', 'PayTabs'),
                 'type'        => 'select',
+                'class'       => 'wc-enhanced-select',
                 'description' => 'Set the Order status if the Auth succeed.',
                 'options'     => $orderStatuses,
                 'default'     => 'wc-on-hold'
@@ -235,6 +321,7 @@ class WC_Gateway_Paytabs extends WC_Payment_Gateway
             $addional_fields['payment_form'] = [
                 'title'       => __('Payment form type', 'PayTabs'),
                 'type'        => 'select',
+                'class'       => 'wc-enhanced-select',
                 'options'     => $redirect_modes,
                 'description' => __("Hosted form on PayTabs server is the secure solution of choice, While iFrame provides better customer experience (https strongly advised)", 'PayTabs'),
                 'default'     => 'redirect',
@@ -253,8 +340,33 @@ class WC_Gateway_Paytabs extends WC_Payment_Gateway
             'endpoint' => array(
                 'title'       => __('PayTabs endpoint region', 'PayTabs'),
                 'type'        => 'select',
+                'class'       => 'wc-enhanced-select',
                 'description' => 'Select your domain',
                 'options'     => $endpoints,
+            ),
+            'paytabs_currency' => array(
+                'title'       => __('PayTabs Payment Currency', 'PayTabs'),
+                'type'        => 'select',
+                'class'       => 'wc-enhanced-select',
+                'description' => __('Change Paytabs Payment Currency to <strong>'.$this->get_option('endpoint').'</strong> currency or any supported currency by PayTabs.', 'PayTabs')
+                    .   __('<br>Your shop currency is '.get_woocommerce_currency().'.', 'PayTabs'),
+                'options'     => $currency_code_options,
+            ),
+            'exchange_rate_url' => array(
+                'title'       => __('Exchange Rate URL', 'PayTabs'),
+                'type'        => 'text',
+                'description' => __('<strong><span style="color: red;">'.$errorMessage.'</span></strong> Check your <a href="'.$this->get_option('exchange_rate_url').'" target="_blank">Exchange Rate URL</a>.', 'PayTabs')
+                    .   __('<br>Current exchange rate: <strong>'.$exchange_rate.' '.$paytabs_currency.'</strong> (1 '.get_woocommerce_currency().' = '.$exchange_rate.' '.$paytabs_currency.'). Last update: <strong>'.$exchange_last_update.'</strong>', 'PayTabs')
+                    .   __('<br><a href='.$open_api.' target="_blank">(Daily) Open API</a>', 'PayTabs'),
+                'default'     => $open_api,
+                'required'    => true
+            ),
+            'custom_exchange_rate' => array(
+                'title'       => __('Custom Exchange Rate', 'PayTabs'),
+                'type'        => 'decimal',
+                'description' => __('Custom Exchange Rate will override <strong>Empty or Invalid</strong> Exchange Rate.', 'PayTabs'),
+                'default'     => '',
+                'required'    => true
             ),
             'title' => array(
                 'title'       => __('Title', 'PayTabs'),
@@ -301,6 +413,7 @@ class WC_Gateway_Paytabs extends WC_Payment_Gateway
             'status_success' => array(
                 'title'       => __('Captured Order status', 'PayTabs'),
                 'type'        => 'select',
+                'class'       => 'wc-enhanced-select',
                 'description' => 'Set the Order status after successful payment.'
                     . '<br><strong>Warning</strong> Be very careful when you change the Default option because when you change it, you change the normal flow of the Order into WooCommerce system, you may encounter some consequences based on the new value you set',
                 'options'     => $orderStatuses,
@@ -308,6 +421,7 @@ class WC_Gateway_Paytabs extends WC_Payment_Gateway
             'status_failed' => array(
                 'title'       => __('Failed Order status', 'PayTabs'),
                 'type'        => 'select',
+                'class'       => 'wc-enhanced-select',
                 'description' => 'Set the Order status after failed payment.'
                     . '<br><strong>Warning</strong> Be very careful when you change the Default option because when you change it, you change the normal flow of the Order into WooCommerce system, you may encounter some consequences based on the new value you set',
                 'options'     => $orderStatuses,
@@ -608,7 +722,7 @@ class WC_Gateway_Paytabs extends WC_Payment_Gateway
         }
 
         // PT
-        $currency = $order->get_currency();
+        $currency = $this->paytabs_currency;
         if (empty($reason)) $reason = 'Admin request';
 
         $pt_refundHolder = new PaytabsFollowupHolder();
@@ -651,16 +765,28 @@ class WC_Gateway_Paytabs extends WC_Payment_Gateway
 
         $order = wc_get_order($order_id);
 
-        $amount = $order->get_total();
+        // Get JSON response
+        $response = $this->get_exchange_rate();
+
+        // Set Currency from PayTabs Payment Currency field
+        $currency = $this->paytabs_currency;
+
+        // Get exchange rate from PayTab Payment Currency or Custom Exchange Rate
+        if ($response->rates) {
+            $exchange_rate = round($response->rates->$currency, 0);
+        } else if ($response->conversion_rates) {
+            $exchange_rate = round($response->conversion_rates->$currency, 0);
+        } else {
+            $exchange_rate = $this->custom_exchange_rate;
+        };
+
+        $amount = $order->get_total() * $exchange_rate;
 
         $transaction_id = $order->get_transaction_id();
 
         if (!$transaction_id) {
             return false;
         }
-
-        // PT
-        $currency = $order->get_currency();
 
         $payment_id = $this->getPaymentMethod($order);
         if ($payment_id != $this->id) {
@@ -721,16 +847,28 @@ class WC_Gateway_Paytabs extends WC_Payment_Gateway
 
         $order = wc_get_order($order_id);
 
-        $amount = $order->get_total();
+        // Get JSON response
+        $response = $this->get_exchange_rate();
+
+        // Set Currency from PayTabs Payment Currency field
+        $currency = $this->paytabs_currency;
+
+        // Get exchange rate from PayTab Payment Currency or Custom Exchange Rate
+        if ($response->rates) {
+            $exchange_rate = round($response->rates->$currency, 0);
+        } else if ($response->conversion_rates) {
+            $exchange_rate = round($response->conversion_rates->$currency, 0);
+        } else {
+            $exchange_rate = $this->custom_exchange_rate;
+        };
+
+        $amount = $order->get_total() * $exchange_rate;
 
         $transaction_id = $order->get_transaction_id();
 
         if (!$transaction_id) {
             return false;
         }
-
-        // PT
-        $currency = $order->get_currency();
 
         $payment_id = $this->getPaymentMethod($order);
         if ($payment_id != $this->id) {
@@ -877,7 +1015,7 @@ class WC_Gateway_Paytabs extends WC_Payment_Gateway
         $order = wc_get_order($pt_order_id);
         // $payment_gateway = wc_get_payment_gateway_by_order($order);
         $ec_total = $order->get_total();
-        $ec_currency = $order->get_currency();
+        $ec_currency = $this->paytabs_currency;
 
         $same_currency = strcasecmp($ec_currency, $pt_tran_currency) == 0;
         $same_total = abs($ec_total - $pt_tran_total) < 0.001;
@@ -1365,11 +1503,25 @@ class WC_Gateway_Paytabs extends WC_Payment_Gateway
         // $shipping = $order->get_total_shipping();
         // $tax = $order->get_total_tax();
 
-        $amount = $total; // + $discount;
+        // Get JSON response
+        $response = $this->get_exchange_rate();
+
+        // Set Currency from PayTabs Payment Currency field
+        $currency = $this->paytabs_currency;
+
+        // Get exchange rate from PayTab Payment Currency or Custom Exchange Rate
+        if ($response->rates) {
+            $exchange_rate = round($response->rates->$currency, 0);
+        } else if ($response->conversion_rates) {
+            $exchange_rate = round($response->conversion_rates->$currency, 0);
+        } else {
+            $exchange_rate = $this->custom_exchange_rate;
+        };
+
+        $amount = $total * $exchange_rate; // + $discount;
         // $other_charges = $shipping + $tax;
         // $totals = $order->get_order_item_totals();
 
-        $currency = $order->get_currency();
         $ip_customer = $order->get_customer_ip_address();
 
         //
@@ -1493,11 +1645,25 @@ class WC_Gateway_Paytabs extends WC_Payment_Gateway
         // $shipping = $order->get_total_shipping();
         // $tax = $order->get_total_tax();
 
-        $amount = $total; // + $discount;
+        // Get JSON response
+        $response = $this->get_exchange_rate();
+
+        // Set Currency from PayTabs Payment Currency field
+        $currency = $this->paytabs_currency;
+
+        // Get exchange rate from PayTab Payment Currency or Custom Exchange Rate
+        if ($response->rates) {
+            $exchange_rate = round($response->rates->$currency, 0);
+        } else if ($response->conversion_rates) {
+            $exchange_rate = round($response->conversion_rates->$currency, 0);
+        } else {
+            $exchange_rate = $this->custom_exchange_rate;
+        };
+
+        $amount = $total * $exchange_rate; // + $discount;
         // $other_charges = $shipping + $tax;
         // $totals = $order->get_order_item_totals();
 
-        $currency = $order->get_order_currency();
         // $ip_customer = $order->get_customer_ip_address();
 
         //
@@ -1593,11 +1759,25 @@ class WC_Gateway_Paytabs extends WC_Payment_Gateway
     {
         global $woocommerce;
 
-        $amount = $order->get_total();
+        // Get JSON response
+        $response = $this->get_exchange_rate();
+
+        // Set Currency from PayTabs Payment Currency field
+        $currency = $this->paytabs_currency;
+
+        // Get exchange rate from PayTab Payment Currency or Custom Exchange Rate
+        if ($response->rates) {
+            $exchange_rate = round($response->rates->$currency, 0);
+        } else if ($response->conversion_rates) {
+            $exchange_rate = round($response->conversion_rates->$currency, 0);
+        } else {
+            $exchange_rate = $this->custom_exchange_rate;
+        };
+
+        $amount = $order->get_total() * $exchange_rate;
         if ($amount_to_charge) {
-            $amount = $amount_to_charge;
+            $amount = $amount_to_charge * $exchange_rate;
         }
-        $currency = $order->get_currency();
 
         //
 
